@@ -69,7 +69,7 @@ class Exam(commands.Cog):
         
         try:
             if isinstance(error, app_commands.MissingRole):
-                await send_method(f"❌ 你需要擁有 ID `{MANAGE_EXAM_ROLE_ID}` 的身分組才能使用此指令！", ephemeral=True)
+                await send_method(f"❌ 你需要擁有管理員的身分組才能使用此指令！", ephemeral=True)
             elif isinstance(error, app_commands.RangeError):
                 await send_method(f"❌ 數量必須介於 {error.minimum} 到 {error.maximum} 之間！", ephemeral=True)
             elif isinstance(error, app_commands.CheckFailure):
