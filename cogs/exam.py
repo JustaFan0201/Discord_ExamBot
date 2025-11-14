@@ -22,6 +22,7 @@ GRADUATER_ID = int(os.getenv("GRADUATER_ID"))
 def init_db():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
+    # 建立 questions 資料表 (不變)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS questions (
             id SERIAL PRIMARY KEY,
@@ -33,17 +34,22 @@ def init_db():
             answer INTEGER NOT NULL
         );
     """)
+    
+    # ✨ 新增：建立 exam_settings 資料表
     cur.execute("""
         CREATE TABLE IF NOT EXISTS exam_settings (
             id INT PRIMARY KEY,
             question_amount INT NOT NULL DEFAULT 5
         );
     """)
+    
+    # ✨ 新增：確保 settings 表中有預設值 (id=1, 數量=5)
     cur.execute("""
         INSERT INTO exam_settings (id, question_amount)
         VALUES (1, 5)
         ON CONFLICT (id) DO NOTHING;
     """)
+    
     conn.commit()
     cur.close()
     conn.close()
@@ -69,17 +75,16 @@ class Exam(commands.Cog):
         
         try:
             if isinstance(error, app_commands.MissingRole):
+                # 這裡的錯誤訊息改成通用，因為 @default_permissions 不會觸發
                 await send_method(f"❌ 你需要擁有管理員的身分組才能使用此指令！", ephemeral=True)
             elif isinstance(error, app_commands.RangeError):
                 await send_method(f"❌ 數量必須介於 {error.minimum} 到 {error.maximum} 之間！", ephemeral=True)
             elif isinstance(error, app_commands.CheckFailure):
                 await send_method("❌ 你不符合使用此指令的條件（例如頻道錯誤）！", ephemeral=True)
             else:
-                # 捕捉來自 discord.app_commands.CommandInvokeError 的原始錯誤
                 original_error = getattr(error, 'original', error)
                 
                 if isinstance(original_error, discord.errors.NotFound) and original_error.code == 10062:
-                    # 這個錯誤通常是因為 defer() 太慢或已被處理，嘗試用 followup
                     await interaction.followup.send("⏳ 互動已超時，但指令可能已在背景執行。請稍後再試。", ephemeral=True)
                 else:
                     print(f"指令 {interaction.command.name} 發生未處理的錯誤: {original_error}")
@@ -89,9 +94,10 @@ class Exam(commands.Cog):
             print(f"在錯誤處理器中發生了更嚴重的錯誤: {e}")
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時]
+    # ✨ [修復 3 秒超時] + [權限更新]
     # -----------------------------------------------
     @app_commands.command(name="add_question", description="新增一個考題（只能在指定房間使用）")
+    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     async def add_question(self, interaction: discord.Interaction,
                            question: str,
@@ -101,7 +107,6 @@ class Exam(commands.Cog):
                            option4: str,
                            answer: int):
         
-        # 1. 立即回應，設為 ephemeral (僅自己可見)
         await interaction.response.defer(ephemeral=True)
 
         if interaction.channel.id != ADD_EXAM_ROOM_ID:
@@ -111,7 +116,6 @@ class Exam(commands.Cog):
             await interaction.followup.send("❌ 答案只能是 1~4！")
             return
         
-        # 2. 執行耗時的資料庫操作
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute("""
@@ -122,13 +126,13 @@ class Exam(commands.Cog):
         cur.close()
         conn.close()
         
-        # 3. 用 followup 傳送最終結果
         await interaction.followup.send(f"✅ 成功新增題目：{question}")
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時]
+    # ✨ [修復 3 秒超時] + [權限更新]
     # -----------------------------------------------
     @app_commands.command(name="delete_question", description="刪除考題（用 ID）")
+    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     async def delete_question(self, interaction: discord.Interaction, question_id: int):
         await interaction.response.defer(ephemeral=True)
@@ -151,9 +155,10 @@ class Exam(commands.Cog):
             await interaction.followup.send(f"❌ 找不到題目 ID {question_id}")
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時]
+    # ✨ [修復 3 秒超時] + [權限更新]
     # -----------------------------------------------
     @app_commands.command(name="list_questions", description="查詢目前題庫中的所有題目（僅限指定房間）")
+    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     async def list_questions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -186,9 +191,10 @@ class Exam(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時]
+    # ✨ [修復 3 秒超時] + [權限更新]
     # -----------------------------------------------
     @app_commands.command(name="reset_questions", description="【危險】刪除所有題目並將 ID 重設回 1")
+    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     async def reset_questions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -209,9 +215,10 @@ class Exam(commands.Cog):
             await interaction.followup.send(f"❌ 重置題庫時發生錯誤：{e}")
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時]
+    # ✨ [修復 3 秒超時] + [權限更新]
     # -----------------------------------------------
     @app_commands.command(name="set_exam_amount", description="設定考試的預設題目數量（1-25 題）")
+    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     @app_commands.describe(amount="要設定的題目數量 (1-25)")
     async def set_exam_amount(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 25]):
@@ -237,18 +244,16 @@ class Exam(commands.Cog):
             await interaction.followup.send(f"❌ 設定時發生錯誤：{e}")
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時]
+    # ✨ [修復 3 秒超時] (此指令對所有人可見)
     # -----------------------------------------------
     @app_commands.command(name="exam", description="開始考試")
     async def exam_start(self, interaction: discord.Interaction):
-        # 1. 立即回應 (這就是你日誌中出錯的地方)
         await interaction.response.defer(ephemeral=True)
         
         if interaction.channel.id != EXAM_ROOM_ID:
             await interaction.followup.send("⚠️ 請到指定的考試房間使用此指令！")
             return
 
-        # 2. 執行耗時的資料庫操作
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute("SELECT question_amount FROM exam_settings WHERE id = 1;")
@@ -270,7 +275,6 @@ class Exam(commands.Cog):
             await interaction.followup.send(f"⚠️ 題庫題目不足！(僅找到 {len(questions)} 題)")
             return
 
-        # 3. 用 followup 傳送最終結果
         view = QuizView(interaction.user, questions, GRADUATER_ID) 
         await interaction.followup.send(
             f"📘 考試開始！共有 {len(questions)} 題，答錯即結束！",
@@ -280,7 +284,6 @@ class Exam(commands.Cog):
 
 # 👇 互動題目選單
 class QuizView(discord.ui.View):
-    # ✨ [Bug 修復] 修正 __init__
     def __init__(self, user: discord.User, questions, graduater_role_id: int):
         super().__init__(timeout=None)
         self.user = user
@@ -291,7 +294,6 @@ class QuizView(discord.ui.View):
         self.show_next()
 
     def show_next(self):
-        # ... (邏輯不變) ...
         self.clear_items()
         if self.index < len(self.questions):
             q = self.questions[self.index]
@@ -313,7 +315,6 @@ class QuizView(discord.ui.View):
 
     def make_callback(self, correct_answer):
         async def callback(interaction: discord.Interaction):
-            # 這裡用 edit_message，不需要 defer
             if interaction.user.id != self.user.id:
                 await interaction.response.send_message("這不是你的考試喔 😅", ephemeral=True)
                 return
@@ -341,11 +342,7 @@ class QuizView(discord.ui.View):
                 )
         return callback
 
-    # -----------------------------------------------
-    # ✨ [Bug 修復] 修正 finish_exam
-    # -----------------------------------------------
     async def finish_exam(self, interaction: discord.Interaction):
-        # 這裡也用 edit_message，不需要 defer
         role = interaction.guild.get_role(self.graduater_role_id)
         
         if role:
