@@ -1,4 +1,4 @@
-# exam.py (已修復 3 秒超時 和 Bug)
+# exam.py (已修復 3 秒超時 / 權限 / 縮排 Bug)
 
 import discord
 from discord import app_commands
@@ -61,30 +61,23 @@ class Exam(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # -----------------------------------------------
-    # ⚠️ [Bug 修復] 移除 Cog 內的 on_ready
-    # -----------------------------------------------
-    # @commands.Cog.listener() ... (已移除)
-
-    # -----------------------------------------------
-    # ✨ 錯誤處理
-    # -----------------------------------------------
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         # 確保 defer() 後的回應
         send_method = interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
         
         try:
             if isinstance(error, app_commands.MissingRole):
-                # 這裡的錯誤訊息改成通用，因為 @default_permissions 不會觸發
                 await send_method(f"❌ 你需要擁有管理員的身分組才能使用此指令！", ephemeral=True)
             elif isinstance(error, app_commands.RangeError):
                 await send_method(f"❌ 數量必須介於 {error.minimum} 到 {error.maximum} 之間！", ephemeral=True)
             elif isinstance(error, app_commands.CheckFailure):
                 await send_method("❌ 你不符合使用此指令的條件（例如頻道錯誤）！", ephemeral=True)
             else:
+                # 捕捉來自 discord.app_commands.CommandInvokeError 的原始錯誤
                 original_error = getattr(error, 'original', error)
                 
                 if isinstance(original_error, discord.errors.NotFound) and original_error.code == 10062:
+                    # 這個錯誤通常是因為 defer() 太慢或已被處理，嘗試用 followup
                     await interaction.followup.send("⏳ 互動已超時，但指令可能已在背景執行。請稍後再試。", ephemeral=True)
                 else:
                     print(f"指令 {interaction.command.name} 發生未處理的錯誤: {original_error}")
@@ -94,10 +87,10 @@ class Exam(commands.Cog):
             print(f"在錯誤處理器中發生了更嚴重的錯誤: {e}")
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限更新]
+    # ✨ [修復 3 秒超時] + [權限修正]
     # -----------------------------------------------
     @app_commands.command(name="add_question", description="新增一個考題（只能在指定房間使用）")
-    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
+    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     async def add_question(self, interaction: discord.Interaction,
                            question: str,
@@ -129,10 +122,10 @@ class Exam(commands.Cog):
         await interaction.followup.send(f"✅ 成功新增題目：{question}")
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限更新]
+    # ✨ [修復 3 秒超時] + [權限修正]
     # -----------------------------------------------
     @app_commands.command(name="delete_question", description="刪除考題（用 ID）")
-    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
+    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     async def delete_question(self, interaction: discord.Interaction, question_id: int):
         await interaction.response.defer(ephemeral=True)
@@ -155,10 +148,10 @@ class Exam(commands.Cog):
             await interaction.followup.send(f"❌ 找不到題目 ID {question_id}")
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限更新]
+    # ✨ [修復 3 秒超時] + [權限修正]
     # -----------------------------------------------
     @app_commands.command(name="list_questions", description="查詢目前題庫中的所有題目（僅限指定房間）")
-    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
+    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     async def list_questions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -191,10 +184,10 @@ class Exam(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限更新]
+    # ✨ [修復 3 秒超時] + [權限修正]
     # -----------------------------------------------
     @app_commands.command(name="reset_questions", description="【危險】刪除所有題目並將 ID 重設回 1")
-    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
+    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     async def reset_questions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -215,10 +208,10 @@ class Exam(commands.Cog):
             await interaction.followup.send(f"❌ 重置題庫時發生錯誤：{e}")
 
     # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限更新]
+    # ✨ [修復 3 秒超時] + [權限修正]
     # -----------------------------------------------
     @app_commands.command(name="set_exam_amount", description="設定考試的預設題目數量（1-25 題）")
-    @app_commands.default_permissions(roles=[MANAGE_EXAM_ROLE_ID]) # <-- ✨ [新功能]
+    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
     @app_commands.describe(amount="要設定的題目數量 (1-25)")
     async def set_exam_amount(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 25]):
@@ -354,12 +347,12 @@ class QuizView(discord.ui.View):
                 )
             except discord.Forbidden:
                 await interaction.response.edit_message(
-                    content=f"✅ 通過考試！但我沒有權限給你身分組，請通知管理員檢查機器人權限位階。",
+                    content=f"✅ 通過考試！但我沒有權限給你 `{role.name}` 身分組，請通知管理員檢查機器人權限位階。",
                     view=None
                 )
         else:
             await interaction.response.edit_message(
-                content=f"✅ 通過考試！但找不到身分組，請通知管理員。",
+                content=f"✅ 通過考試！但找不到 ID 為 `{self.graduater_role_id}` 的身分組，請通知管理員。",
                 view=None
             )
 
