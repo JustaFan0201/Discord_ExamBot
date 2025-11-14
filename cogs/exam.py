@@ -354,12 +354,12 @@ class QuizView(discord.ui.View):
                 )
             except discord.Forbidden:
                 await interaction.response.edit_message(
-                    content=f"✅ 通過考試！但我沒有權限給你 `{role.name}` 身分組，請通知管理員檢查機器人權限位階。",
+                    content=f"✅ 通過考試！但我沒有權限給你身分組，請通知管理員檢查機器人權限位階。",
                     view=None
                 )
         else:
             await interaction.response.edit_message(
-                content=f"✅ 通過考試！但找不到 ID 為 `{self.graduater_role_id}` 的身分組，請通知管理員。",
+                content=f"✅ 通過考試！但找不到身分組，請通知管理員。",
                 view=None
             )
 
