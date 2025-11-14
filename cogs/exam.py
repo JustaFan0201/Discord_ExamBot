@@ -1,3 +1,4 @@
+# exam.py (已修復 3 秒超時 / 權限 / 縮排 Bug)
 
 import discord
 from discord import app_commands
@@ -70,7 +71,7 @@ class Exam(commands.Cog):
                 await send_method(f"❌ 你需要擁有管理員的身分組才能使用此指令！", ephemeral=True)
             # ⚠️ 修正：處理 RangeError 可能不存在於舊版本的 discord.py
             elif "RangeError" in str(type(error)):
-                 await send_method(f"❌ 數量必須介於 {error.minimum} 到 {error.maximum} 之間！", ephemeral=True)
+                 await send_method(f"❌ 數量必須介於 1 到 25 之間！", ephemeral=True) # 手動填入範圍
             elif isinstance(error, app_commands.CheckFailure):
                 await send_method("❌ 你不符合使用此指令的條件（例如頻道錯誤）！", ephemeral=True)
             else:
@@ -292,7 +293,6 @@ class QuizView(discord.ui.View):
         if self.index < len(self.questions):
             q = self.questions[self.index]
             
-            # 1. 建立 (選項文字, 原始答案 1-4) 的列表
             options_to_shuffle = [
                 (q[2], "1"),  # (option1_text, "1")
                 (q[3], "2"),  # (option2_text, "2")
@@ -300,40 +300,38 @@ class QuizView(discord.ui.View):
                 (q[5], "4"),  # (option4_text, "4")
             ]
             
-            # 2. 打亂這個列表
             random.shuffle(options_to_shuffle)
             
-            # 3. 從打亂的列表中建立 SelectOption
             select_options = []
             for text, original_value in options_to_shuffle:
                 select_options.append(discord.SelectOption(label=text, value=original_value))
 
-            # 4. 建立 Select
             select = discord.ui.Select(
                 placeholder=f"第 {self.index + 1} 題：{q[1]}",
                 options=select_options
             )
             
-            # 5. 回呼函數不變。它會比較 "original_value" 和儲存的 "correct_answer"
-            #    (q[6] 儲存的是 1, 2, 3 或 4)
-            select.callback = self.make_callback(int(q[6]))
+            # ✨ [功能更新] 傳入問題文字 (q[1])
+            select.callback = self.make_callback(int(q[6]), q[1])
             self.add_item(select)
         else:
             button = discord.ui.Button(label="完成考試", style=discord.ButtonStyle.success)
             button.callback = self.finish_exam
             self.add_item(button)
 
-    def make_callback(self, correct_answer):
+    # -----------------------------------------------
+    # ✨ [功能更新] 答錯時公開點名
+    # -----------------------------------------------
+    def make_callback(self, correct_answer, question_text: str): # <-- 接收 question_text
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.user.id:
                 await interaction.response.send_message("這不是你的考試喔 😅", ephemeral=True)
                 return
             
-            # 'selected' 抓到的是 "original_value" (1, 2, 3, 4)
             selected = int(interaction.data["values"][0])
             
-            # 比較 'selected' 和 'correct_answer' (都來自原始的 1-4)
             if selected == correct_answer:
+                # 答對
                 self.correct_count += 1
                 self.index += 1
                 if self.index < len(self.questions):
@@ -349,10 +347,28 @@ class QuizView(discord.ui.View):
                         view=self
                     )
             else:
+                # 答錯
+                # 1. 私下通知考生
                 await interaction.response.edit_message(
                     content=f"❌ 答錯了！考試結束 😢",
                     view=None
                 )
+                
+                # 2. 找到 ADD_EXAM_ROOM_ID 頻道
+                # (ADD_EXAM_ROOM_ID 是在檔案頂端定義的，可以直接用)
+                announce_channel = interaction.guild.get_channel(ADD_EXAM_ROOM_ID)
+                
+                # 3. 公開點名
+                if announce_channel:
+                    try:
+                        await announce_channel.send(
+                            f"😥 **考試失敗！** \n"
+                            f"成員 {interaction.user.mention} 在考試中答錯了以下題目：\n"
+                            f"> {question_text}"
+                        )
+                    except Exception as e:
+                        print(f"無法傳送失敗訊息到管理頻道: {e}")
+                
         return callback
 
     async def finish_exam(self, interaction: discord.Interaction):
