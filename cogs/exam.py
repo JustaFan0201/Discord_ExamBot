@@ -1,4 +1,3 @@
-# exam.py (已修復 3 秒超時 / 權限 / 縮排 Bug)
 
 import discord
 from discord import app_commands
@@ -20,6 +19,7 @@ GRADUATER_ID = int(os.getenv("GRADUATER_ID"))
 # ✨ [功能更新] 修改 init_db
 # -----------------------------------------------
 def init_db():
+    # ⚠️ 修正縮排
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     # 建立 questions 資料表 (不變)
@@ -68,8 +68,9 @@ class Exam(commands.Cog):
         try:
             if isinstance(error, app_commands.MissingRole):
                 await send_method(f"❌ 你需要擁有管理員的身分組才能使用此指令！", ephemeral=True)
-            elif isinstance(error, app_commands.RangeError):
-                await send_method(f"❌ 數量必須介於 {error.minimum} 到 {error.maximum} 之間！", ephemeral=True)
+            # ⚠️ 修正：處理 RangeError 可能不存在於舊版本的 discord.py
+            elif "RangeError" in str(type(error)):
+                 await send_method(f"❌ 數量必須介於 {error.minimum} 到 {error.maximum} 之間！", ephemeral=True)
             elif isinstance(error, app_commands.CheckFailure):
                 await send_method("❌ 你不符合使用此指令的條件（例如頻道錯誤）！", ephemeral=True)
             else:
@@ -183,9 +184,6 @@ class Exam(commands.Cog):
         embed.description = description_text
         await interaction.followup.send(embed=embed)
 
-    # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限修正]
-    # -----------------------------------------------
     @app_commands.command(name="reset_questions", description="【危險】刪除所有題目並將 ID 重設回 1")
     @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
     @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
@@ -286,19 +284,38 @@ class QuizView(discord.ui.View):
         self.correct_count = 0
         self.show_next()
 
+    # -----------------------------------------------
+    # ✨ [功能更新] 隨機打亂選項
+    # -----------------------------------------------
     def show_next(self):
         self.clear_items()
         if self.index < len(self.questions):
             q = self.questions[self.index]
+            
+            # 1. 建立 (選項文字, 原始答案 1-4) 的列表
+            options_to_shuffle = [
+                (q[2], "1"),  # (option1_text, "1")
+                (q[3], "2"),  # (option2_text, "2")
+                (q[4], "3"),  # (option3_text, "3")
+                (q[5], "4"),  # (option4_text, "4")
+            ]
+            
+            # 2. 打亂這個列表
+            random.shuffle(options_to_shuffle)
+            
+            # 3. 從打亂的列表中建立 SelectOption
+            select_options = []
+            for text, original_value in options_to_shuffle:
+                select_options.append(discord.SelectOption(label=text, value=original_value))
+
+            # 4. 建立 Select
             select = discord.ui.Select(
                 placeholder=f"第 {self.index + 1} 題：{q[1]}",
-                options=[
-                    discord.SelectOption(label=q[2], value="1"),
-                    discord.SelectOption(label=q[3], value="2"),
-                    discord.SelectOption(label=q[4], value="3"),
-                    discord.SelectOption(label=q[5], value="4"),
-                ]
+                options=select_options
             )
+            
+            # 5. 回呼函數不變。它會比較 "original_value" 和儲存的 "correct_answer"
+            #    (q[6] 儲存的是 1, 2, 3 或 4)
             select.callback = self.make_callback(int(q[6]))
             self.add_item(select)
         else:
@@ -312,7 +329,10 @@ class QuizView(discord.ui.View):
                 await interaction.response.send_message("這不是你的考試喔 😅", ephemeral=True)
                 return
             
+            # 'selected' 抓到的是 "original_value" (1, 2, 3, 4)
             selected = int(interaction.data["values"][0])
+            
+            # 比較 'selected' 和 'correct_answer' (都來自原始的 1-4)
             if selected == correct_answer:
                 self.correct_count += 1
                 self.index += 1
