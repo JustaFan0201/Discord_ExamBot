@@ -12,7 +12,7 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
 EXAM_ROOM_ID = int(os.getenv("EXAM_ROOM_ID"))
-ADD_EXAM_ROOM_ID = int(os.getenv("ADD_EXAM_ROOM_ID"))
+MANAGE_ROOM_ID = int(os.getenv("MANAGE_ROOM_ID"))
 MANAGE_EXAM_ROLE_ID = int(os.getenv("MANAGE_EXAM_ROLE_ID"))
 GRADUATER_ID = int(os.getenv("GRADUATER_ID"))
 
@@ -104,7 +104,7 @@ class Exam(commands.Cog):
         
         await interaction.response.defer(ephemeral=True)
 
-        if interaction.channel.id != ADD_EXAM_ROOM_ID:
+        if interaction.channel.id != MANAGE_ROOM_ID:
             await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
             return
         if answer not in [1, 2, 3, 4]:
@@ -132,7 +132,7 @@ class Exam(commands.Cog):
     async def delete_question(self, interaction: discord.Interaction, question_id: int):
         await interaction.response.defer(ephemeral=True)
 
-        if interaction.channel.id != ADD_EXAM_ROOM_ID:
+        if interaction.channel.id != MANAGE_ROOM_ID:
             await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
             return
         
@@ -158,7 +158,7 @@ class Exam(commands.Cog):
     async def list_questions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        if interaction.channel.id != ADD_EXAM_ROOM_ID:
+        if interaction.channel.id != MANAGE_ROOM_ID:
             await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
             return
             
@@ -191,7 +191,7 @@ class Exam(commands.Cog):
     async def reset_questions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        if interaction.channel.id != ADD_EXAM_ROOM_ID:
+        if interaction.channel.id != MANAGE_ROOM_ID:
             await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
             return
             
@@ -216,7 +216,7 @@ class Exam(commands.Cog):
     async def set_exam_amount(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 25]):
         await interaction.response.defer(ephemeral=True)
         
-        if interaction.channel.id != ADD_EXAM_ROOM_ID:
+        if interaction.channel.id != MANAGE_ROOM_ID:
             await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
             return
 
@@ -354,9 +354,9 @@ class QuizView(discord.ui.View):
                     view=None
                 )
                 
-                # 2. 找到 ADD_EXAM_ROOM_ID 頻道
-                # (ADD_EXAM_ROOM_ID 是在檔案頂端定義的，可以直接用)
-                announce_channel = interaction.guild.get_channel(ADD_EXAM_ROOM_ID)
+                # 2. 找到 MANAGE_ROOM_ID 頻道
+                # (MANAGE_ROOM_ID 是在檔案頂端定義的，可以直接用)
+                announce_channel = interaction.guild.get_channel(MANAGE_ROOM_ID)
                 
                 # 3. 公開點名
                 if announce_channel:
