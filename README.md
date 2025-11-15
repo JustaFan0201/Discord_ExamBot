@@ -40,7 +40,7 @@ Guild Install新增ManageRoles SendMessage ViewChanels (我不太確定Manage Ch
    ![alt text](img/image-13.png)  
 底下方案一樣選free  
 最底下的Environment Variables新增   
-DISCORD_BOT_TOKEN=剛剛的BotToken
+DISCORD_BOT_TOKEN=剛剛的BotToken  
 EXAM_ROOM_ID=考試房間ID  
 MANAGE_ROOM_ID=新增考題房間ID  
 EXTERNAL_DATABASE_URL=剛剛Postgres的URL  
