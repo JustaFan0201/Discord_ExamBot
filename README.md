@@ -2,7 +2,8 @@
 1. 創立bot 
 https://discord.com/developers/applications  
 a. General Information: 就設定你bot的名稱等  
-b. Bot: 在Bot選項中有Token 請記住它等等會用到 如果忘了就Reset會給新的
+b. Bot: 在Bot選項中有Token 請記住它等等會用到 如果忘了就Reset會給新的  
+Presence Intent, Server Members Intent, Message Content Intent 三個要打開  
 ![alt text](img/image.png)  
 c. Installation: 滑到最底下 Scopes新增一個bot  
 Guild Install新增ManageRoles SendMessage ViewChanels (我不太確定Manage Channel要不要 有問題再說) 
@@ -41,11 +42,7 @@ Guild Install新增ManageRoles SendMessage ViewChanels (我不太確定Manage Ch
 底下方案一樣選free  
 最底下的Environment Variables新增   
 DISCORD_BOT_TOKEN=剛剛的BotToken  
-EXAM_ROOM_ID=考試房間ID  
-MANAGE_ROOM_ID=新增考題房間ID  
 EXTERNAL_DATABASE_URL=剛剛Postgres的URL  
-MANAGE_EXAM_ROLE_ID=新增考題身分的ID  
-GRADUATER_ID=考完試後取得的ID  
 好了之後進去專案  
 ![alt text](img/image-14.png)
 右上角第一個就是部屬到伺服器了  
