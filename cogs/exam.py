@@ -1,4 +1,4 @@
-# exam.py (已修復 3 秒超時 / 權限 / 縮排 Bug)
+# exam.py (UI 優化版 / 冷卻時間顯示為「具體時間點」)
 
 import discord
 from discord import app_commands
@@ -6,24 +6,22 @@ from discord.ext import commands
 import psycopg2
 import os
 import random
+import time
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
-EXAM_ROOM_ID = int(os.getenv("EXAM_ROOM_ID"))
-MANAGE_ROOM_ID = int(os.getenv("MANAGE_ROOM_ID"))
-MANAGE_EXAM_ROLE_ID = int(os.getenv("MANAGE_EXAM_ROLE_ID"))
-GRADUATER_ID = int(os.getenv("GRADUATER_ID"))
 
 # -----------------------------------------------
 # ✨ [功能更新] 修改 init_db
 # -----------------------------------------------
 def init_db():
-    # ⚠️ 修正縮排
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-    # 建立 questions 資料表 (不變)
+    
+    # 1. 建立基礎 Tables (若不存在)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS questions (
             id SERIAL PRIMARY KEY,
@@ -36,21 +34,49 @@ def init_db():
         );
     """)
     
-    # ✨ 新增：建立 exam_settings 資料表
     cur.execute("""
         CREATE TABLE IF NOT EXISTS exam_settings (
             id INT PRIMARY KEY,
-            question_amount INT NOT NULL DEFAULT 5
+            question_amount INT NOT NULL DEFAULT 5,
+            failure_cooldown_minutes INT NOT NULL DEFAULT 0,
+            exam_room_id BIGINT,
+            add_exam_room_id BIGINT,
+            manage_exam_role_id BIGINT,
+            graduater_role_id BIGINT
         );
     """)
     
-    # ✨ 新增：確保 settings 表中有預設值 (id=1, 數量=5)
     cur.execute("""
-        INSERT INTO exam_settings (id, question_amount)
-        VALUES (1, 5)
+        CREATE TABLE IF NOT EXISTS user_cooldowns (
+            user_id BIGINT PRIMARY KEY,
+            cooldown_until TIMESTAMP
+        );
+    """)
+
+    # 2. 確保設定表有預設值
+    cur.execute("""
+        INSERT INTO exam_settings (id, question_amount, failure_cooldown_minutes)
+        VALUES (1, 5, 0)
         ON CONFLICT (id) DO NOTHING;
     """)
+
+    # 3. 資料庫遷移
+    new_columns = [
+        ("exam_room_id", "BIGINT"),
+        ("add_exam_room_id", "BIGINT"),
+        ("manage_exam_role_id", "BIGINT"),
+        ("graduater_role_id", "BIGINT"),
+        ("failure_cooldown_minutes", "INT NOT NULL DEFAULT 0")
+    ]
     
+    for col_name, col_type in new_columns:
+        try:
+            cur.execute(f"ALTER TABLE exam_settings ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
+        except Exception:
+            conn.rollback()
+        else:
+            conn.commit()
+
     conn.commit()
     cur.close()
     conn.close()
@@ -62,78 +88,181 @@ class Exam(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    # ---------------------------------------------------------
+    # 🛠️ 輔助方法：讀取設定
+    # ---------------------------------------------------------
+    def get_settings(self):
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT question_amount, failure_cooldown_minutes, 
+                   exam_room_id, add_exam_room_id, 
+                   manage_exam_role_id, graduater_role_id 
+            FROM exam_settings WHERE id = 1;
+        """)
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if row:
+            return {
+                "question_amount": row[0],
+                "failure_cooldown_minutes": row[1],
+                "exam_room_id": row[2],
+                "add_exam_room_id": row[3],
+                "manage_exam_role_id": row[4],
+                "graduater_role_id": row[5]
+            }
+        return None
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        # 確保 defer() 後的回應
         send_method = interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
-        
         try:
-            if isinstance(error, app_commands.MissingRole):
-                await send_method(f"❌ 你需要擁有管理員的身分組才能使用此指令！", ephemeral=True)
-            # ⚠️ 修正：處理 RangeError 可能不存在於舊版本的 discord.py
+            if isinstance(error, app_commands.MissingPermissions):
+                await send_method(f"❌ 你需要管理員權限才能使用此指令！", ephemeral=True)
             elif "RangeError" in str(type(error)):
-                 await send_method(f"❌ 數量必須介於 1 到 25 之間！", ephemeral=True) # 手動填入範圍
-            elif isinstance(error, app_commands.CheckFailure):
-                await send_method("❌ 你不符合使用此指令的條件（例如頻道錯誤）！", ephemeral=True)
+                 await send_method(f"❌ 數值超出允許範圍！", ephemeral=True)
             else:
-                # 捕捉來自 discord.app_commands.CommandInvokeError 的原始錯誤
-                original_error = getattr(error, 'original', error)
-                
-                if isinstance(original_error, discord.errors.NotFound) and original_error.code == 10062:
-                    # 這個錯誤通常是因為 defer() 太慢或已被處理，嘗試用 followup
-                    await interaction.followup.send("⏳ 互動已超時，但指令可能已在背景執行。請稍後再試。", ephemeral=True)
-                else:
-                    print(f"指令 {interaction.command.name} 發生未處理的錯誤: {original_error}")
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message("🤖 發生了一個未知的錯誤，請聯繫管理員。", ephemeral=True)
+                pass
         except Exception as e:
-            print(f"在錯誤處理器中發生了更嚴重的錯誤: {e}")
+            print(f"錯誤處理器發生錯誤: {e}")
 
-    # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限修正]
-    # -----------------------------------------------
-    @app_commands.command(name="add_question", description="新增一個考題（只能在指定房間使用）")
-    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
-    @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
-    async def add_question(self, interaction: discord.Interaction,
-                           question: str,
-                           option1: str,
-                           option2: str,
-                           option3: str,
-                           option4: str,
-                           answer: int):
-        
+    # ---------------------------------------------------------
+    # ⚙️ 管理員設定指令
+    # ---------------------------------------------------------
+
+    @app_commands.command(name="set_exam_room", description="設定考試專用頻道")
+    @app_commands.default_permissions(administrator=True)
+    async def set_exam_room(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await interaction.response.defer(ephemeral=True)
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("UPDATE exam_settings SET exam_room_id = %s WHERE id = 1;", (channel.id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        await interaction.followup.send(f"✅ 已將 **考試頻道** 設定為：{channel.mention}")
 
-        if interaction.channel.id != MANAGE_ROOM_ID:
-            await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
+    @app_commands.command(name="set_manage_room", description="設定新增/管理題目的頻道")
+    @app_commands.default_permissions(administrator=True)
+    async def set_manage_room(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("UPDATE exam_settings SET add_exam_room_id = %s WHERE id = 1;", (channel.id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        await interaction.followup.send(f"✅ 已將 **管理題目頻道** 設定為：{channel.mention}")
+
+    @app_commands.command(name="set_manage_role", description="設定考官(管理題目)的身分組")
+    @app_commands.default_permissions(administrator=True)
+    async def set_manage_role(self, interaction: discord.Interaction, role: discord.Role):
+        await interaction.response.defer(ephemeral=True)
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("UPDATE exam_settings SET manage_exam_role_id = %s WHERE id = 1;", (role.id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        await interaction.followup.send(f"✅ 已將 **考官身分組** 設定為：{role.mention}")
+
+    @app_commands.command(name="set_graduate_role", description="設定考試通過後給予的身分組")
+    @app_commands.default_permissions(administrator=True)
+    async def set_graduate_role(self, interaction: discord.Interaction, role: discord.Role):
+        await interaction.response.defer(ephemeral=True)
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("UPDATE exam_settings SET graduater_role_id = %s WHERE id = 1;", (role.id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        await interaction.followup.send(f"✅ 已將 **畢業身分組** 設定為：{role.mention}")
+
+    @app_commands.command(name="set_exam_amount", description="設定考試題目數量")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(amount="題目數量 (1-999)")
+    async def set_exam_amount(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 999]):
+        await interaction.response.defer(ephemeral=True)
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("UPDATE exam_settings SET question_amount = %s WHERE id = 1;", (amount,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        await interaction.followup.send(f"✅ 考試題目數量已設為 **{amount}** 題。")
+
+    @app_commands.command(name="set_exam_cooldown", description="設定考試失敗後的冷卻時間 (分鐘)")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(minutes="冷卻分鐘數 (0 代表無冷卻)")
+    async def set_exam_cooldown(self, interaction: discord.Interaction, minutes: app_commands.Range[int, 0, 1440]):
+        await interaction.response.defer(ephemeral=True)
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("UPDATE exam_settings SET failure_cooldown_minutes = %s WHERE id = 1;", (minutes,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        await interaction.followup.send(f"✅ 考試失敗冷卻時間已設為 **{minutes}** 分鐘。(設為 0 可立即解除所有冷卻)")
+
+    # ---------------------------------------------------------
+    # 📋 題目管理指令
+    # ---------------------------------------------------------
+
+    async def check_manager_access(self, interaction: discord.Interaction, settings):
+        if not settings:
+            await interaction.followup.send("❌ 系統尚未初始化設定，請聯絡管理員！")
+            return False
+
+        if not settings['add_exam_room_id']:
+            await interaction.followup.send("❌ 管理員尚未設定「管理題目頻道」！請使用 `/set_manage_room` 設定。")
+            return False
+        if interaction.channel.id != settings['add_exam_room_id']:
+            await interaction.followup.send(f"⚠️ 請在指定的管理頻道 <#{settings['add_exam_room_id']}> 使用此指令！")
+            return False
+
+        if not settings['manage_exam_role_id']:
+            await interaction.followup.send("❌ 管理員尚未設定「考官身分組」！請使用 `/set_manage_role` 設定。")
+            return False
+        
+        has_role = interaction.user.get_role(settings['manage_exam_role_id']) is not None
+        is_admin = interaction.user.guild_permissions.administrator
+        
+        if not has_role and not is_admin:
+            await interaction.followup.send(f"❌ 你需要 <@&{settings['manage_exam_role_id']}> 身分組才能操作！")
+            return False
+            
+        return True
+
+    @app_commands.command(name="add_question", description="新增一個考題")
+    @app_commands.default_permissions(administrator=True)
+    async def add_question(self, interaction: discord.Interaction, question: str, option1: str, option2: str, option3: str, option4: str, answer: int):
+        await interaction.response.defer(ephemeral=True)
+        
+        settings = self.get_settings()
+        if not await self.check_manager_access(interaction, settings):
             return
+
         if answer not in [1, 2, 3, 4]:
             await interaction.followup.send("❌ 答案只能是 1~4！")
             return
         
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO questions (question, option1, option2, option3, option4, answer)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (question, option1, option2, option3, option4, answer))
+        cur.execute("INSERT INTO questions (question, option1, option2, option3, option4, answer) VALUES (%s, %s, %s, %s, %s, %s)", 
+                    (question, option1, option2, option3, option4, answer))
         conn.commit()
         cur.close()
         conn.close()
-        
         await interaction.followup.send(f"✅ 成功新增題目：{question}")
 
-    # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限修正]
-    # -----------------------------------------------
-    @app_commands.command(name="delete_question", description="刪除考題（用 ID）")
-    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
-    @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
+    @app_commands.command(name="delete_question", description="刪除考題")
+    @app_commands.default_permissions(administrator=True)
     async def delete_question(self, interaction: discord.Interaction, question_id: int):
         await interaction.response.defer(ephemeral=True)
-
-        if interaction.channel.id != MANAGE_ROOM_ID:
-            await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
+        
+        settings = self.get_settings()
+        if not await self.check_manager_access(interaction, settings):
             return
         
         conn = psycopg2.connect(DATABASE_URL)
@@ -149,17 +278,13 @@ class Exam(commands.Cog):
         else:
             await interaction.followup.send(f"❌ 找不到題目 ID {question_id}")
 
-    # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限修正]
-    # -----------------------------------------------
-    @app_commands.command(name="list_questions", description="查詢目前題庫中的所有題目（僅限指定房間）")
-    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
-    @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
+    @app_commands.command(name="list_questions", description="查詢所有題目")
+    @app_commands.default_permissions(administrator=True)
     async def list_questions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-
-        if interaction.channel.id != MANAGE_ROOM_ID:
-            await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
+        
+        settings = self.get_settings()
+        if not await self.check_manager_access(interaction, settings):
             return
             
         conn = psycopg2.connect(DATABASE_URL)
@@ -181,18 +306,16 @@ class Exam(commands.Cog):
                 description_text += "\n... (題目過多，僅顯示部分)"
                 break
             description_text += line
-            
         embed.description = description_text
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="reset_questions", description="【危險】刪除所有題目並將 ID 重設回 1")
-    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
-    @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
+    @app_commands.command(name="reset_questions", description="【危險】清空題庫")
+    @app_commands.default_permissions(administrator=True)
     async def reset_questions(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-
-        if interaction.channel.id != MANAGE_ROOM_ID:
-            await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
+        
+        settings = self.get_settings()
+        if not await self.check_manager_access(interaction, settings):
             return
             
         try:
@@ -202,127 +325,135 @@ class Exam(commands.Cog):
             conn.commit()
             cur.close()
             conn.close()
-            await interaction.followup.send("💥 題庫已清空，ID 計數器已重設回 1。")
+            await interaction.followup.send("💥 題庫已重置。")
         except Exception as e:
-            await interaction.followup.send(f"❌ 重置題庫時發生錯誤：{e}")
+            await interaction.followup.send(f"❌ 錯誤：{e}")
 
-    # -----------------------------------------------
-    # ✨ [修復 3 秒超時] + [權限修正]
-    # -----------------------------------------------
-    @app_commands.command(name="set_exam_amount", description="設定考試的預設題目數量（1-25 題）")
-    @app_commands.default_permissions(manage_roles=True) # <-- ✨ [權限修正]
-    @app_commands.checks.has_role(MANAGE_EXAM_ROLE_ID)
-    @app_commands.describe(amount="要設定的題目數量 (1-25)")
-    async def set_exam_amount(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 25]):
-        await interaction.response.defer(ephemeral=True)
-        
-        if interaction.channel.id != MANAGE_ROOM_ID:
-            await interaction.followup.send("⚠️ 這個指令只能在指定的新增題目頻道使用！")
-            return
+    # ---------------------------------------------------------
+    # 📝 考試核心指令
+    # ---------------------------------------------------------
 
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO exam_settings (id, question_amount)
-                VALUES (1, %s)
-                ON CONFLICT (id) DO UPDATE SET question_amount = EXCLUDED.question_amount;
-            """, (amount,))
-            conn.commit()
-            cur.close()
-            conn.close()
-            await interaction.followup.send(f"✅ 成功將考試題目數量設為 **{amount}** 題。")
-        except Exception as e:
-            await interaction.followup.send(f"❌ 設定時發生錯誤：{e}")
-
-    # -----------------------------------------------
-    # ✨ [修復 3 秒超時] (此指令對所有人可見)
-    # -----------------------------------------------
     @app_commands.command(name="exam", description="開始考試")
     async def exam_start(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         
-        if interaction.channel.id != EXAM_ROOM_ID:
-            await interaction.followup.send("⚠️ 請到指定的考試房間使用此指令！")
+        settings = self.get_settings()
+        
+        if not settings:
+            await interaction.followup.send("❌ 系統錯誤：無法讀取設定。", ephemeral=True)
+            return
+        if not settings['exam_room_id']:
+            await interaction.followup.send("❌ 管理員尚未設定「考試頻道」！請使用 `/set_exam_room` 設定。", ephemeral=True)
+            return
+        if not settings['graduater_role_id']:
+            await interaction.followup.send("❌ 管理員尚未設定「畢業身分組」！請使用 `/set_graduate_role` 設定。", ephemeral=True)
+            return
+
+        if interaction.channel.id != settings['exam_room_id']:
+            await interaction.followup.send(f"⚠️ 請到指定的考試房間 <#{settings['exam_room_id']}> 使用此指令！")
             return
 
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        cur.execute("SELECT question_amount FROM exam_settings WHERE id = 1;")
-        setting_row = cur.fetchone()
-        amount_to_fetch = 5
-        if setting_row:
-            amount_to_fetch = setting_row[0]
+        
+        # ✨ [邏輯優化] 檢查冷卻 (顯示靜態文字)
+        if settings['failure_cooldown_minutes'] > 0:
+            cur.execute("SELECT cooldown_until FROM user_cooldowns WHERE user_id = %s", (interaction.user.id,))
+            cooldown_row = cur.fetchone()
             
+            if cooldown_row:
+                cooldown_until = cooldown_row[0]
+                # 計算剩餘秒數
+                remaining_seconds = (cooldown_until - datetime.now()).total_seconds()
+                
+                # 如果剩餘時間大於 3 秒，才阻擋
+                if remaining_seconds > 3:
+                    # 轉換為 分:秒 格式
+                    mins, secs = divmod(int(remaining_seconds), 60)
+                    time_str = f"{mins} 分 {secs} 秒" if mins > 0 else f"{secs} 秒"
+                    
+                    await interaction.followup.send(f"⏳ 你上次考試失敗，正在冷卻中。\n請等待 **{time_str}** 後再試。", ephemeral=True)
+                    cur.close()
+                    conn.close()
+                    return
+
+        amount_to_fetch = settings['question_amount']
         cur.execute("SELECT * FROM questions ORDER BY RANDOM() LIMIT %s", (amount_to_fetch,))
         questions = cur.fetchall()
         cur.close()
         conn.close()
 
         if not questions:
-            await interaction.followup.send("目前題庫是空的，請先新增題目！")
+            await interaction.followup.send("目前題庫是空的！")
             return
-        
         if len(questions) < amount_to_fetch:
-            await interaction.followup.send(f"⚠️ 題庫題目不足！(僅找到 {len(questions)} 題)")
+            await interaction.followup.send(f"⚠️ 題目不足 (僅 {len(questions)} 題)！")
             return
 
-        view = QuizView(interaction.user, questions, GRADUATER_ID) 
+        # 建立 View
+        view = QuizView(
+            self.bot, 
+            interaction.user, 
+            questions, 
+            settings['graduater_role_id'], 
+            settings['failure_cooldown_minutes'],
+            settings['add_exam_room_id']
+        ) 
+        
         await interaction.followup.send(
-            f"📘 考試開始！共有 {len(questions)} 題，答錯即結束！",
+            f"📘 考試開始！共有 {len(questions)} 題。",
+            embed=view.current_embed, 
             view=view
         )
 
 
 # 👇 互動題目選單
 class QuizView(discord.ui.View):
-    def __init__(self, user: discord.User, questions, graduater_role_id: int):
+    def __init__(self, bot: commands.Bot, user: discord.User, questions, graduater_role_id: int, cooldown_minutes: int, manage_channel_id: int):
         super().__init__(timeout=None)
+        self.bot = bot
         self.user = user
         self.questions = questions
         self.graduater_role_id = graduater_role_id
+        self.cooldown_minutes = cooldown_minutes
+        self.manage_channel_id = manage_channel_id
         self.index = 0
         self.correct_count = 0
         self.show_next()
 
-    # -----------------------------------------------
-    # ✨ [功能更新] 隨機打亂選項
-    # -----------------------------------------------
     def show_next(self):
         self.clear_items()
         if self.index < len(self.questions):
             q = self.questions[self.index]
             
             options_to_shuffle = [
-                (q[2], "1"),  # (option1_text, "1")
-                (q[3], "2"),  # (option2_text, "2")
-                (q[4], "3"),  # (option3_text, "3")
-                (q[5], "4"),  # (option4_text, "4")
+                (q[2], "1"), (q[3], "2"), (q[4], "3"), (q[5], "4")
             ]
-            
             random.shuffle(options_to_shuffle)
             
+            embed = discord.Embed(title=f"第 {self.index + 1} / {len(self.questions)} 題", description=f"**{q[1]}**", color=discord.Color.green())
+            
             select_options = []
-            for text, original_value in options_to_shuffle:
-                select_options.append(discord.SelectOption(label=text, value=original_value))
+            for i, (text, original_value) in enumerate(options_to_shuffle):
+                embed.add_field(name=f"選項 {i+1}", value=text, inline=False)
+                select_options.append(discord.SelectOption(label=f"選項 {i+1}", value=original_value))
 
             select = discord.ui.Select(
-                placeholder=f"第 {self.index + 1} 題：{q[1]}",
+                placeholder="請選擇一個選項...",
                 options=select_options
             )
             
-            # ✨ [功能更新] 傳入問題文字 (q[1])
             select.callback = self.make_callback(int(q[6]), q[1])
             self.add_item(select)
+            self.current_embed = embed
+            
         else:
-            button = discord.ui.Button(label="完成考試", style=discord.ButtonStyle.success)
+            button = discord.ui.Button(label="領取證書", style=discord.ButtonStyle.success)
             button.callback = self.finish_exam
             self.add_item(button)
+            self.current_embed = discord.Embed(title="🎉 考試結束", description="恭喜你全部答對！請點擊下方按鈕領取身分組。", color=discord.Color.gold())
 
-    # -----------------------------------------------
-    # ✨ [功能更新] 答錯時公開點名
-    # -----------------------------------------------
-    def make_callback(self, correct_answer, question_text: str): # <-- 接收 question_text
+    def make_callback(self, correct_answer, question_text: str):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.user.id:
                 await interaction.response.send_message("這不是你的考試喔 😅", ephemeral=True)
@@ -331,66 +462,71 @@ class QuizView(discord.ui.View):
             selected = int(interaction.data["values"][0])
             
             if selected == correct_answer:
-                # 答對
                 self.correct_count += 1
                 self.index += 1
                 if self.index < len(self.questions):
                     self.show_next()
-                    await interaction.response.edit_message(
-                        content=f"✅ 答對了！進入下一題（第 {self.index + 1} 題）",
-                        view=self
-                    )
+                    await interaction.response.edit_message(content=None, embed=self.current_embed, view=self)
                 else:
                     self.show_next()
-                    await interaction.response.edit_message(
-                        content=f"🎉 全部答對！恭喜通過考試！請點擊下方完成按鈕！",
-                        view=self
-                    )
+                    await interaction.response.edit_message(content=None, embed=self.current_embed, view=self)
             else:
-                # 答錯
-                # 1. 私下通知考生
-                await interaction.response.edit_message(
-                    content=f"❌ 答錯了！考試結束 😢",
-                    view=None
-                )
+                await interaction.response.edit_message(content=f"❌ 答錯了！考試結束 😢", embed=None, view=None)
                 
-                # 2. 找到 MANAGE_ROOM_ID 頻道
-                # (MANAGE_ROOM_ID 是在檔案頂端定義的，可以直接用)
-                announce_channel = interaction.guild.get_channel(MANAGE_ROOM_ID)
-                
-                # 3. 公開點名
-                if announce_channel:
+                if self.cooldown_minutes > 0:
                     try:
-                        await announce_channel.send(
-                            f"😥 **考試失敗！** \n"
-                            f"成員 {interaction.user.mention} 在考試中答錯了以下題目：\n"
-                            f"> {question_text}"
-                        )
+                        conn = psycopg2.connect(DATABASE_URL)
+                        cur = conn.cursor()
+                        cooldown_until = datetime.now() + timedelta(minutes=self.cooldown_minutes)
+                        cur.execute("""
+                            INSERT INTO user_cooldowns (user_id, cooldown_until) 
+                            VALUES (%s, %s) 
+                            ON CONFLICT (user_id) DO UPDATE SET cooldown_until = EXCLUDED.cooldown_until;
+                        """, (interaction.user.id, cooldown_until))
+                        conn.commit()
+                        cur.close()
+                        conn.close()
                     except Exception as e:
-                        print(f"無法傳送失敗訊息到管理頻道: {e}")
+                        print(f"冷卻設定失敗: {e}")
+
+                if self.manage_channel_id:
+                    try:
+                        announce_channel = self.bot.get_channel(self.manage_channel_id)
+                        if not announce_channel:
+                             announce_channel = await self.bot.fetch_channel(self.manage_channel_id)
+
+                        if announce_channel:
+                            retry_msg = ""
+                            if self.cooldown_minutes > 0:
+                                future_ts = int((datetime.now() + timedelta(minutes=self.cooldown_minutes)).timestamp())
+                                # ✨ [格式優化] 這裡的通知也改成具體時間點
+                                retry_msg = f"\n⏳ 需等待至 <t:{future_ts}:t> 才能重考。"
+
+                            await announce_channel.send(
+                                f"😥 **考試失敗通知**\n"
+                                f"成員：{interaction.user.mention}\n"
+                                f"錯誤題目：**{question_text}**"
+                                f"{retry_msg}"
+                            )
+                    except Exception as e:
+                        print(f"無法傳送失敗訊息: {e}")
                 
         return callback
 
     async def finish_exam(self, interaction: discord.Interaction):
+        if not self.graduater_role_id:
+            await interaction.response.edit_message(content="❌ 系統錯誤：未設定畢業身分組 ID。", embed=None, view=None)
+            return
+
         role = interaction.guild.get_role(self.graduater_role_id)
-        
         if role:
             try:
                 await interaction.user.add_roles(role)
-                await interaction.response.edit_message(
-                    content=f"🏅 恭喜通過考試，已獲得身分組：{role.name}",
-                    view=None
-                )
+                await interaction.response.edit_message(content=f"🏅 恭喜！已獲得身分組：{role.name}", embed=None, view=None)
             except discord.Forbidden:
-                await interaction.response.edit_message(
-                    content=f"✅ 通過考試！但我沒有權限給你 `{role.name}` 身分組，請通知管理員檢查機器人權限位階。",
-                    view=None
-                )
+                await interaction.response.edit_message(content="✅ 通過！但我權限不足給予身分組，請通知管理員。", embed=None, view=None)
         else:
-            await interaction.response.edit_message(
-                content=f"✅ 通過考試！但找不到 ID 為 `{self.graduater_role_id}` 的身分組，請通知管理員。",
-                view=None
-            )
+            await interaction.response.edit_message(content=f"✅ 通過！但找不到 ID `{self.graduater_role_id}` 的身分組。", embed=None, view=None)
 
 async def setup(bot):
     await bot.add_cog(Exam(bot))
