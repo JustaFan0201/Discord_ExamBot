@@ -356,27 +356,34 @@ class Exam(commands.Cog):
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
-        # ✨ [邏輯優化] 檢查冷卻 (顯示靜態文字)
+        # 1. 檢查是否在冷卻中
         if settings['failure_cooldown_minutes'] > 0:
             cur.execute("SELECT cooldown_until FROM user_cooldowns WHERE user_id = %s", (interaction.user.id,))
             cooldown_row = cur.fetchone()
             
             if cooldown_row:
                 cooldown_until = cooldown_row[0]
-                # 計算剩餘秒數
                 remaining_seconds = (cooldown_until - datetime.now()).total_seconds()
                 
-                # 如果剩餘時間大於 3 秒，才阻擋
                 if remaining_seconds > 3:
-                    # 轉換為 分:秒 格式
                     mins, secs = divmod(int(remaining_seconds), 60)
                     time_str = f"{mins} 分 {secs} 秒" if mins > 0 else f"{secs} 秒"
-                    
-                    await interaction.followup.send(f"⏳ 你上次考試失敗，正在冷卻中。\n請等待 **{time_str}** 後再試。", ephemeral=True)
+                    await interaction.followup.send(f"⏳ 考試正在冷卻中。\n請等待 **{time_str}** 後再試。", ephemeral=True)
                     cur.close()
                     conn.close()
                     return
 
+        # 2. ✨ 寫入新的冷卻時間 (只要開始考試，就設定冷卻)
+        if settings['failure_cooldown_minutes'] > 0:
+            new_cooldown_until = datetime.now() + timedelta(minutes=settings['failure_cooldown_minutes'])
+            cur.execute("""
+                INSERT INTO user_cooldowns (user_id, cooldown_until) 
+                VALUES (%s, %s) 
+                ON CONFLICT (user_id) DO UPDATE SET cooldown_until = EXCLUDED.cooldown_until;
+            """, (interaction.user.id, new_cooldown_until))
+            conn.commit() # 立即存檔
+
+        # 3. 撈題目
         amount_to_fetch = settings['question_amount']
         cur.execute("SELECT * FROM questions ORDER BY RANDOM() LIMIT %s", (amount_to_fetch,))
         questions = cur.fetchall()
